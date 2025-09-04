@@ -21,6 +21,7 @@ from .util import (
 Step = Callable[[str], None]
 UA = "mc-panel/interactive-cli"
 
+
 # ───────────────────────────── pack detection ──────────────────────────────
 
 
@@ -303,7 +304,7 @@ exit 0
     bat.write_text(
         '@echo off\r\n'
         'cd /d %~dp0\r\n'
-        f'set "JAVA_BIN={pick_java()}"\n'
+        f'set "JAVA_BIN={pick_java()}"\r\n'
         'set "JAR="\r\n'
         'for %%f in (fabric-server-launch.jar forge-*.jar neoforge-*.jar server.jar) do (\r\n'
         '  if not defined JAR if exist "%%f" set "JAR=%%f"\r\n'
@@ -342,7 +343,9 @@ def create_server(
       - else detect loader & mc version from the pack and install that loader
     """
     p = Progress(say)
-    tell = (lambda m: say(m) if say else None)
+    def tell(m: str):
+        if say:
+            say(m)
 
     dir = server_dir(name)
     dir.mkdir(parents=True, exist_ok=True)
@@ -386,40 +389,42 @@ def create_server(
 
         # Try to find runnable jar or a pack-provided runner
         jar_name, runner = find_runnable_after_extract(dir)
+
+        # Prefer installer-generated runner (e.g. Forge/NeoForge)
         if runner and runner.name == "run.sh":
             p.start(0.10, "Creating runner-based launcher…")
             make_scripts_invoke_runner(dir)
             p.end("Launch scripts ready.")
             p.start(1.0 - p.base, "Finalizing…")
             p.end("Finished setup.")
-            tell and tell("100% Done.")
+            tell("100% Done.")
             return str(dir)
 
+        # Otherwise: if a jar is present, use jar launcher
         if jar_name:
             p.start(0.10, f"Creating launch scripts for {jar_name}…")
             make_scripts(dir, xmx=xmx, xms=xms)
             p.end("Launch scripts ready.")
             p.start(1.0 - p.base, "Finalizing…")
             p.end("Finished setup.")
-            tell and tell("100% Done.")
+            tell("100% Done.")
             return str(dir)
 
         # No jar/runner → install detected modloader if possible
         if detected_loader:
             if detected_mc:
                 version = detected_mc
-            tell and tell(
+            tell(
                 f"No server jar found; installing detected {detected_loader} "
                 f"({version}{(' / ' + detected_build) if detected_build else ''})"
             )
             flavor = detected_loader
         else:
-            tell and tell(
-                "No server jar found; could not detect pack loader — falling back to chosen flavor."
-            )
+            tell("No server jar found; could not detect pack loader — falling back to chosen flavor.")
 
     # Installer path (either no pack, or pack had no jar and we fell back / detected)
     env = dict(os.environ)
+    # prevent Forge installer from trying GUI in headless envs
     env["JAVA_TOOL_OPTIONS"] = (env.get("JAVA_TOOL_OPTIONS", "") + " -Djava.awt.headless=true").strip()
 
     if flavor == "vanilla":
@@ -485,5 +490,5 @@ def create_server(
 
     p.start(1.0 - p.base, "Finalizing…")
     p.end("Finished setup.")
-    tell and tell("100% Done.")
+    tell("100% Done.")
     return str(dir)
