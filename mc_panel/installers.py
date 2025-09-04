@@ -307,59 +307,34 @@ exit 0
     sh.write_text(content_sh, encoding="utf-8"); os.chmod(sh, 0o755)
 
     bat = dir / "start.bat"
-    bat.write_text(
-        '@echo off
-'
-        'cd /d %~dp0
-'
-        'if not exist logs mkdir logs
-'
-        'type NUL >> logs\console.log
-'
-        f'set "JAVA_BIN={pick_java()}"
-'
-        'set "JAR="
-'
-        'for %%f in (fabric-server-launch.jar fabric-server-launcher.jar fabric-installer*.jar forge-*.jar neoforge-*.jar server.jar) do if not defined JAR if exist "%%f" set "JAR=%%f"
-'
-        'if not defined JAR for %%f in (*server*.jar) do if not defined JAR if exist "%%f" set "JAR=%%f"
-'
-        'if not defined JAR for %%f in (*.jar) do if not defined JAR if exist "%%f" (
-'
-        '  echo %%f | find /I "install" >nul || set "JAR=%%f"
-'
-        ')
-'
-        'if not defined JAR (
-'
-        '  echo [start.bat] No server jar found.> logs\console.log
-'
-        '  dir /b *.jar >> logs\console.log
-'
-        '  exit /b 1
-'
-        ')
-'
-        'set "L=__"
-'
-        'echo %JAR% | find /I "fabric-server-launch" >nul && set "L=fabric"
-'
-        'echo %JAR% | find /I "fabric-server-launcher" >nul && set "L=fabric"
-'
-        'echo %JAR% | find /I "fabric-installer" >nul && set "L=fabric"
-'
-        'if "%L%"=="fabric" (
-'
-        '  start "" /min "%JAVA_BIN%" -jar "%JAR%"
-'
-        ') else (
-'
-        '  start "" /min "%JAVA_BIN%" -Xms' + xms + ' -Xmx' + xmx + ' -jar "%JAR%" nogui
-'
-        ')
-',
-        encoding="utf-8",
+    bat_content = (
+        '@echo off\r\n'
+        'cd /d %~dp0\r\n'
+        'if not exist logs mkdir logs\r\n'
+        'type NUL >> logs\\console.log\r\n'
+        f'set "JAVA_BIN={pick_java()}"\r\n'
+        'set "JAR="\r\n'
+        'for %%f in (fabric-server-launch.jar fabric-server-launcher.jar fabric-installer*.jar forge-*.jar neoforge-*.jar server.jar) do if not defined JAR if exist "%%f" set "JAR=%%f"\r\n'
+        'if not defined JAR for %%f in (*server*.jar) do if not defined JAR if exist "%%f" set "JAR=%%f"\r\n'
+        'if not defined JAR for %%f in (*.jar) do if not defined JAR if exist "%%f" (\r\n'
+        '  echo %%f | find /I "install" >nul || set "JAR=%%f"\r\n'
+        ')\r\n'
+        'if not defined JAR (\r\n'
+        '  echo [start.bat] No server jar found.> logs\\console.log\r\n'
+        '  dir /b *.jar >> logs\\console.log\r\n'
+        '  exit /b 1\r\n'
+        ')\r\n'
+        'set "L=__"\r\n'
+        'echo %JAR% | find /I "fabric-server-launch" >nul && set "L=fabric"\r\n'
+        'echo %JAR% | find /I "fabric-server-launcher" >nul && set "L=fabric"\r\n'
+        'echo %JAR% | find /I "fabric-installer" >nul && set "L=fabric"\r\n'
+        'if "%L%"=="fabric" (\r\n'
+        '  start "" /min "%JAVA_BIN%" -jar "%JAR%"\r\n'
+        ') else (\r\n'
+        f'  start "" /min "%JAVA_BIN%" -Xms{xms} -Xmx{xmx} -jar "%JAR%" nogui\r\n'
+        ')\r\n'
     )
+    bat.write_text(bat_content, encoding="utf-8")
 
 
 def create_server(
