@@ -147,9 +147,10 @@ def start(name: str) -> str:
 
     (d / "logs").mkdir(parents=True, exist_ok=True)
 
-    # Unix: prefer wrapper / start.sh (Forge/NeoForge path)
+    # Unix: prefer wrapper / start.sh (Forge/NeoForge/Fabric path)
     if not is_windows:
-            _ensure_runner_wrapper(d)
+        _ensure_runner_wrapper(d)   # <── this should always be here, indented 8 spaces
+
         if run_sh.exists():
             _ensure_runner_wrapper(d)
 
@@ -158,6 +159,7 @@ def start(name: str) -> str:
                 os.chmod(start_sh, 0o755)
             except Exception:
                 pass
+            # … rest of the start() logic …
             # Spawn non-blocking and record PID immediately
             try:
                 proc = subprocess.Popen(
