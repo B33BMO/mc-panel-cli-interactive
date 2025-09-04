@@ -241,7 +241,6 @@ exit 0
     os.chmod(sh, 0o755)
 
 
-
 def make_scripts(dir: Path, xmx: str, xms: str):
     sh = dir / "start.sh"
     content_sh = f'''#!/usr/bin/env bash
