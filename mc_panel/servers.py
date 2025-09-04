@@ -149,6 +149,7 @@ def start(name: str) -> str:
 
     # Unix: prefer wrapper / start.sh (Forge/NeoForge path)
     if not is_windows:
+            _ensure_runner_wrapper(d)
         if run_sh.exists():
             _ensure_runner_wrapper(d)
 

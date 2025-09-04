@@ -87,7 +87,7 @@ def do_restart(args):
 def do_logs(args):
     import os
     d = server_dir(args.name)
-    paths = [d/'logs'/'latest.log', d/'logs'/'console.log']
+    paths = [d/'logs'/'console.log', d/'logs'/'console.log']
     p = next((x for x in paths if x.exists()), paths[-1])
     if not p.exists():
         print("No logs yet.")

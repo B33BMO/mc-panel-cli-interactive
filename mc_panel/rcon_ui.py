@@ -142,7 +142,7 @@ async def run_rcon_ui(name: str) -> None:
     # Background tasks
     paths = [
         d / "logs" / "console.log",
-        d / "logs" / "latest.log",
+        d / "logs" / "console.log",
         d / "logs" / "debug.log",
     ]
     tail_task = asyncio.create_task(tail_many(paths))
