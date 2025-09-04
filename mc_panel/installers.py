@@ -270,11 +270,17 @@ mkdir -p logs
 
 JAR=""
 
+# Order matters:
+#  1) Fabric launcher
+#  2) Fabric installer (explicitly allowed here)
+#  3) Forge/NeoForge jars
+#  4) Vanilla server.jar / *server*.jar / any *.jar (non-installer)
 shopt -s nullglob
 candidates=(fabric-server-launch.jar fabric-server-launcher.jar fabric-installer*.jar forge-*.jar neoforge-*.jar server.jar *server*.jar *.jar)
 for pat in "${{candidates[@]}}"; do
   for f in $pat; do
     low="${{f,,}}"
+    # Allow fabric *installer* explicitly; otherwise skip installers
     if [[ "$low" == fabric-installer*.jar || "$low" == fabric-server-launch*.jar || "$low" == fabric-server-launcher*.jar ]]; then
       JAR="$f"; break 2
     fi
@@ -294,12 +300,14 @@ fi
 XMS="${{XMS:-{xms}}}"
 XMX="${{XMX:-{xmx}}}"
 
+# === Fabric rule: run installer-or-launcher with `java -jar` ===
 if [[ "${{JAR,,}}" == fabric-server-launch*.jar || "${{JAR,,}}" == fabric-server-launcher*.jar || "${{JAR,,}}" == fabric-installer*.jar ]]; then
   nohup "$JAVA_BIN" -jar "$JAR" >> logs/console.log 2>&1 &
   echo $! > server.pid
   exit 0
 fi
 
+# Others: normal server launch
 nohup "$JAVA_BIN" -Xms"$XMS" -Xmx"$XMX" -jar "$JAR" nogui >> logs/console.log 2>&1 &
 echo $! > server.pid
 exit 0
@@ -307,13 +315,14 @@ exit 0
     sh.write_text(content_sh, encoding="utf-8"); os.chmod(sh, 0o755)
 
     bat = dir / "start.bat"
-    bat_content = (
+    bat.write_text(
         '@echo off\r\n'
         'cd /d %~dp0\r\n'
         'if not exist logs mkdir logs\r\n'
         'type NUL >> logs\\console.log\r\n'
         f'set "JAVA_BIN={pick_java()}"\r\n'
         'set "JAR="\r\n'
+        # Fabric first, allow fabric installer explicitly:
         'for %%f in (fabric-server-launch.jar fabric-server-launcher.jar fabric-installer*.jar forge-*.jar neoforge-*.jar server.jar) do if not defined JAR if exist "%%f" set "JAR=%%f"\r\n'
         'if not defined JAR for %%f in (*server*.jar) do if not defined JAR if exist "%%f" set "JAR=%%f"\r\n'
         'if not defined JAR for %%f in (*.jar) do if not defined JAR if exist "%%f" (\r\n'
@@ -331,10 +340,14 @@ exit 0
         'if "%L%"=="fabric" (\r\n'
         '  start "" /min "%JAVA_BIN%" -jar "%JAR%"\r\n'
         ') else (\r\n'
-        f'  start "" /min "%JAVA_BIN%" -Xms{xms} -Xmx{xmx} -jar "%JAR%" nogui\r\n'
-        ')\r\n'
+        '  start "" /min "%JAVA_BIN%" -Xms' + xms + ' -Xmx' + xmx + ' -jar "%JAR%" nogui\r\n'
+        ')\r\n',
+        encoding="utf-8",
     )
-    bat.write_text(bat_content, encoding="utf-8")
+
+
+
+# ───────────────────────────── create pipeline ─────────────────────────────
 
 
 def create_server(
