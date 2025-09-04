@@ -1,33 +1,37 @@
+# mc_panel/installers.py
 from __future__ import annotations
-import os, json, subprocess, zipfile, io
+
+import io
+import json
+import os
+import subprocess
+import zipfile
 from pathlib import Path
 from typing import Callable, Optional
-from urllib.request import urlopen, Request
+from urllib.request import Request, urlopen
 
-from .util import server_dir, write_eula, write_properties, ensure_rcon_props, pick_java
+from .util import (
+    ensure_rcon_props,
+    pick_java,
+    server_dir,
+    write_eula,
+    write_properties,
+)
 
 Step = Callable[[str], None]
 UA = "mc-panel/interactive-cli"
-# --- pack detection helpers --------------------------------------------------
 
-def detect_pack_from_bytes(zbytes: bytes) -> tuple[Optional[str], Optional[str]]:
-    """
-    Return (loader, mc_version) where loader in {"fabric","forge","neoforge"} if detected.
-    Looks inside CurseForge 'manifest.json' or Modrinth 'modrinth.index.json'.
-    """
-    import re
-    ml = None
-    mc = None
-    with zipfile.ZipFile(io.BytesIO(zbytes)) as zf:
-        names = set(zf.namelist())
+# ───────────────────────────── pack detection ──────────────────────────────
+
 
 def detect_pack_from_bytes(zbytes: bytes) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """
     Return (loader, mc_version, loader_build) where:
-      loader in {"fabric","forge","neoforge"} if detected,
+      loader ∈ {"fabric","forge","neoforge"} if detected,
       mc_version like "1.20.1" if detected,
       loader_build like "47.3.5" (forge) / "20.4.192" (neoforge) / "0.15.11" (fabric) if present.
-    Looks inside CurseForge 'manifest.json' or Modrinth 'modrinth.index.json'.
+
+    Looks inside CurseForge `manifest.json` or Modrinth `modrinth.index.json`.
     """
     ml: Optional[str] = None
     mc: Optional[str] = None
@@ -51,7 +55,6 @@ def detect_pack_from_bytes(zbytes: bytes) -> tuple[Optional[str], Optional[str],
                         ml = "neoforge"
                     elif "forge" in ml_id:
                         ml = "forge"
-                    # extract build after the hyphen if present
                     if "-" in ml_id:
                         _, tail = ml_id.split("-", 1)
                         lb = tail.strip() or None
@@ -59,12 +62,11 @@ def detect_pack_from_bytes(zbytes: bytes) -> tuple[Optional[str], Optional[str],
                 pass
 
         # 2) Modrinth modrinth.index.json
-        if not ml and "modrinth.index.json" in names:
+        if "modrinth.index.json" in names and not ml:
             try:
                 idx = json.loads(zf.read("modrinth.index.json").decode("utf-8"))
                 deps = idx.get("dependencies") or {}
                 mc = deps.get("minecraft") or mc
-                # Modrinth deps may include pinned loader versions
                 if "fabric-loader" in deps:
                     ml = "fabric"
                     lb = deps.get("fabric-loader") or lb
@@ -86,21 +88,24 @@ def find_runnable_after_extract(dir: Path) -> tuple[Optional[str], Optional[Path
     Return (jar_name, runner_script_path) where one of them may be None.
     """
     import glob
-    # Known jars first
-    candidates = []
-    candidates += glob.glob(str(dir / "fabric-server-launch.jar"))
-    candidates += glob.glob(str(dir / "forge-*.jar"))
-    candidates += glob.glob(str(dir / "neoforge-*.jar"))
-    # vanilla fallback
-    if not candidates:
-        if (dir / "server.jar").exists():
-            candidates = [str(dir / "server.jar")]
-        else:
-            candidates = glob.glob(str(dir / "*server*.jar"))
 
-    jar_name = os.path.basename(candidates[0]) if candidates else None
+    # Known jars first (skip installers)
+    def first_match(pattern: str) -> Optional[str]:
+        for p in glob.glob(str(dir / pattern)):
+            if "installer" not in os.path.basename(p).lower():
+                return p
+        return None
 
-    # Runner scripts some packs include
+    jar_path = (
+        first_match("fabric-server-launch.jar")
+        or first_match("forge-*.jar")
+        or first_match("neoforge-*.jar")
+        or (str(dir / "server.jar") if (dir / "server.jar").exists() else None)
+        or first_match("*server*.jar")
+    )
+    jar_name = os.path.basename(jar_path) if jar_path else None
+
+    # Runner scripts some packs include (Forge/NeoForge installers generate run.sh)
     runner = None
     for rname in ("run.sh", "startserver.sh", "start.sh"):
         rp = dir / rname
@@ -110,31 +115,41 @@ def find_runnable_after_extract(dir: Path) -> tuple[Optional[str], Optional[Path
 
     return jar_name, runner
 
-# ------------------------ progress ------------------------
+
+# ───────────────────────────── progress + http ─────────────────────────────
+
 
 class Progress:
     def __init__(self, say: Step | None):
         self.say = say
         self.base = 0.0
         self.weight = 0.0
+
     def start(self, weight: float, msg: str | None = None):
         self.weight = max(0.0, min(1.0, weight))
-        if msg: self.emit(0.0, msg)
+        if msg:
+            self.emit(0.0, msg)
+
     def emit(self, ratio: float, msg: str):
         pct = int(round((self.base + self.weight * max(0.0, min(1.0, ratio))) * 100))
-        if self.say: self.say(f"{pct}% {msg}")
+        if self.say:
+            self.say(f"{pct}% {msg}")
+
     def end(self, msg: str | None = None):
         self.base = min(1.0, self.base + self.weight)
         self.weight = 0.0
-        if msg and self.say: self.say(f"{int(round(self.base*100))}% {msg}")
+        if msg and self.say:
+            self.say(f"{int(round(self.base * 100))}% {msg}")
 
-# ------------------------ http ----------------------------
 
 def http_open(url: str):
     req = Request(url, headers={"User-Agent": UA})
     return urlopen(req)  # caller closes
 
-def download_stream(url: str, dest: Path, prog: Progress | None = None, label: str = "Downloading") -> None:
+
+def download_stream(
+    url: str, dest: Path, prog: Optional[Progress] = None, label: str = "Downloading"
+) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     with http_open(url) as r, open(dest, "wb") as f:
         total = int(r.headers.get("Content-Length", "0")) or 0
@@ -148,19 +163,24 @@ def download_stream(url: str, dest: Path, prog: Progress | None = None, label: s
             if total and prog:
                 prog.emit(seen / total, f"{label}…")
 
+
 def http_get_json(url: str):
     with http_open(url) as r:
         return json.loads(r.read().decode("utf-8"))
+
 
 def http_get_bytes(url: str) -> bytes:
     with http_open(url) as r:
         return r.read()
 
-# ------------------------ meta urls -----------------------
+
+# ───────────────────────────── version metadata ─────────────────────────────
+
 
 def latest_vanilla() -> str:
     data = http_get_json("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json")
     return data["latest"]["release"]
+
 
 def vanilla_server_url(version: str) -> str:
     data = http_get_json("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json")
@@ -170,14 +190,18 @@ def vanilla_server_url(version: str) -> str:
     ver_data = http_get_json(ver["url"])
     return ver_data["downloads"]["server"]["url"]
 
+
 def fabric_installer_url() -> str:
     items = http_get_json("https://meta.fabricmc.net/v2/versions/installer")
     v = next((x for x in items if x.get("stable")), items[0])
     ver = v["version"]
     return f"https://maven.fabricmc.net/net/fabricmc/fabric-installer/{ver}/fabric-installer-{ver}.jar"
 
+
 def forge_installer_url(mc: str) -> str:
-    promos = http_get_json("https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json")
+    promos = http_get_json(
+        "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json"
+    )
     p = promos.get("promos", {})
     build = p.get(f"{mc}-recommended") or p.get(f"{mc}-latest")
     if not build:
@@ -185,9 +209,13 @@ def forge_installer_url(mc: str) -> str:
     ver = f"{mc}-{build}"
     return f"https://maven.minecraftforge.net/net/minecraftforge/forge/{ver}/forge-{ver}-installer.jar"
 
+
 def neoforge_installer_url(mc: str) -> str:
-    xml = http_get_bytes("https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml").decode("utf-8", "ignore")
+    xml = http_get_bytes(
+        "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml"
+    ).decode("utf-8", "ignore")
     import re
+
     versions = re.findall(r"<version>([^<]+)</version>", xml)
     if not versions:
         raise RuntimeError("NeoForge metadata empty")
@@ -197,55 +225,101 @@ def neoforge_installer_url(mc: str) -> str:
     chosen = candidates[-1] if candidates else versions[-1]
     return f"https://maven.neoforged.net/releases/net/neoforged/neoforge/{chosen}/neoforge-{chosen}-installer.jar"
 
+
 def forge_installer_url_for_build(mc: str, build: str) -> str:
-    # Forge artifact format: {mc}-{build}, e.g. 1.20.1-47.3.5
-    ver = f"{mc}-{build}"
+    ver = f"{mc}-{build}"  # e.g. 1.20.1-47.3.5
     return f"https://maven.minecraftforge.net/net/minecraftforge/forge/{ver}/forge-{ver}-installer.jar"
 
+
 def neoforge_installer_url_for_build(build: str) -> str:
-    # NeoForge artifact directory is just the build number (e.g. 20.4.192)
+    # e.g. 20.4.192
     return f"https://maven.neoforged.net/releases/net/neoforged/neoforge/{build}/neoforge-{build}-installer.jar"
 
-# ------------------------ scripts -------------------------
+
+# ───────────────────────────── launcher scripts ─────────────────────────────
+
+
+def make_scripts_invoke_runner(dir: Path):
+    """Create start.sh that just backgrounds the pack/installer-provided run.sh."""
+    sh = dir / "start.sh"
+    sh.write_text(
+        '#!/usr/bin/env bash\n'
+        'cd "$(dirname "$0")"\n'
+        'mkdir -p logs\n'
+        'chmod +x "./run.sh" 2>/dev/null || true\n'
+        'nohup ./run.sh >> logs/console.log 2>&1 &\n'
+        'echo $! > server.pid\n'
+        'exit 0\n',
+        encoding="utf-8",
+    )
+    os.chmod(sh, 0o755)
+
+    # Minimal Windows helper (expects run.bat to exist if on Windows)
+    bat = dir / "start.bat"
+    bat.write_text(
+        '@echo off\r\n'
+        'cd /d %~dp0\r\n'
+        'if exist run.bat start "" /min cmd /c run.bat\r\n'
+        'if not exist run.bat echo No run.bat present. Use start.sh on Unix.\r\n',
+        encoding="utf-8",
+    )
+
 
 def make_scripts(dir: Path, xmx: str, xms: str):
+    """Create start.sh that discovers a server jar (skipping *installer*)."""
     sh = dir / "start.sh"
-    bat = dir / "start.bat"
     content_sh = f'''#!/usr/bin/env bash
 cd "$(dirname "$0")"
 JAVA_BIN="${{JAVA_BIN:-{pick_java()}}}"
 JAR=""
-# try explicit order first
+
+# explicit order first (skip installers)
 for C in "fabric-server-launch.jar" "forge-*.jar" "neoforge-*.jar" "server.jar"; do
   CAND=$(ls -1 $C 2>/dev/null | grep -vi installer | head -n1)
   if [ -n "$CAND" ]; then JAR="$CAND"; break; fi
 done
+
 # generic fallback: any *server*.jar that isn't an installer
 if [ -z "$JAR" ]; then
   JAR=$(ls -1 *server*.jar 2>/dev/null | grep -vi installer | head -n1)
 fi
 
+if [ -z "$JAR" ]; then
+  echo "No server jar found. Try 'mccli.py create' again or check the server pack." >&2
+  exit 1
+fi
+
 mkdir -p logs
-nohup "$JAVA_BIN" -Xms{xms} -Xmx{xmx} -jar "$JAR" nogui >> logs/console.log 2>&1 &
+XMS="${{XMS:-{xms}}}"
+XMX="${{XMX:-{xmx}}}"
+nohup "$JAVA_BIN" -Xms"$XMS" -Xmx"$XMX" -jar "$JAR" nogui >> logs/console.log 2>&1 &
 echo $! > server.pid
 exit 0
 '''
-    sh.write_text(content_sh, encoding="utf-8"); os.chmod(sh, 0o755)
-    content_bat = (
+    sh.write_text(content_sh, encoding="utf-8")
+    os.chmod(sh, 0o755)
+
+    bat = dir / "start.bat"
+    bat.write_text(
         '@echo off\r\n'
         'cd /d %~dp0\r\n'
-        f'set "JAVA_BIN={pick_java()}"\r\n'
+        f'set "JAVA_BIN={pick_java()}"\n'
+        'set "JAR="\r\n'
         'for %%f in (fabric-server-launch.jar forge-*.jar neoforge-*.jar server.jar) do (\r\n'
-        '  if exist "%%f" set "JAR=%%f"\r\n'
+        '  if not defined JAR if exist "%%f" set "JAR=%%f"\r\n'
         ')\r\n'
-        'if not defined JAR for %%f in (*server*.jar) do ( if exist "%%f" set "JAR=%%f" )\r\n'
+        'if not defined JAR for %%f in (*server*.jar) do (\r\n'
+        '  if not defined JAR if exist "%%f" set "JAR=%%f"\r\n'
+        ')\r\n'
         'if not defined JAR echo No server jar found.& exit /b 1\r\n'
         'mkdir logs 2>nul\r\n'
-        'start "" /min "%JAVA_BIN%" -Xms' + xms + ' -Xmx' + xmx + ' -jar "%JAR%" nogui\r\n'
+        f'start "" /min "%JAVA_BIN%" -Xms{xms} -Xmx{xmx} -jar "%JAR%" nogui\r\n',
+        encoding="utf-8",
     )
-    bat.write_text(content_bat, encoding="utf-8")
 
-# ------------------------ create -------------------------------------------
+
+# ───────────────────────────── create pipeline ─────────────────────────────
+
 
 def create_server(
     name: str,
@@ -256,19 +330,19 @@ def create_server(
     port: int = 25565,
     eula: bool = True,
     curseforge_server_zip_url: Optional[str] = None,
-    optimize: bool = False,
+    optimize: bool = False,  # reserved
     say: Step | None = None,
 ) -> str:
     """
-    Emit progress as 'NN% message' so the CLI draws a progress bar.
+    Creates a server directory and installs the requested flavor.
+    Emits progress via say("NN% message").
     If a CurseForge/Modrinth server ZIP is provided:
       - extract it
-      - if no runnable jar/runner found, detect modloader + mc version and install that loader automatically
-      - if detection fails, fall back to the passed `flavor`
+      - if a jar or runner is found, wire up start scripts accordingly
+      - else detect loader & mc version from the pack and install that loader
     """
     p = Progress(say)
-    def tell(m: str):
-        if say: say(m)
+    tell = (lambda m: say(m) if say else None)
 
     dir = server_dir(name)
     dir.mkdir(parents=True, exist_ok=True)
@@ -279,10 +353,10 @@ def create_server(
         version = latest_vanilla()
     write_eula(dir, accept=eula)
     ensure_rcon_props(dir)
-    write_properties(dir / "server.properties", {
-        "server-port": str(port),
-        "motd": f"{name} on mc-panel",
-    })
+    write_properties(
+        dir / "server.properties",
+        {"server-port": str(port), "motd": f"{name} on mc-panel"},
+    )
     p.end(f"Using Minecraft {version}.")
 
     detected_loader: Optional[str] = None
@@ -293,7 +367,6 @@ def create_server(
     if curseforge_server_zip_url:
         p.start(0.25, "Fetching server pack…")
         zip_path = dir / "cf-server-pack.zip"
-        # Read bytes (lets us sniff metadata)
         with http_open(curseforge_server_zip_url) as r:
             data = r.read()
         zip_path.write_bytes(data)
@@ -303,7 +376,7 @@ def create_server(
         try:
             detected_loader, detected_mc, detected_build = detect_pack_from_bytes(data)
         except Exception:
-            detected_loader, detected_mc, detected_build = None, None, None
+            detected_loader = detected_mc = detected_build = None
 
         # Extract
         p.start(0.15, "Extracting server pack…")
@@ -313,25 +386,42 @@ def create_server(
 
         # Try to find runnable jar or a pack-provided runner
         jar_name, runner = find_runnable_after_extract(dir)
+        if runner and runner.name == "run.sh":
+            p.start(0.10, "Creating runner-based launcher…")
+            make_scripts_invoke_runner(dir)
+            p.end("Launch scripts ready.")
+            p.start(1.0 - p.base, "Finalizing…")
+            p.end("Finished setup.")
+            tell and tell("100% Done.")
+            return str(dir)
+
         if jar_name:
             p.start(0.10, f"Creating launch scripts for {jar_name}…")
             make_scripts(dir, xmx=xmx, xms=xms)
             p.end("Launch scripts ready.")
             p.start(1.0 - p.base, "Finalizing…")
             p.end("Finished setup.")
-            tell("100% Done.")
+            tell and tell("100% Done.")
             return str(dir)
 
-        # No jar found. Prefer installing the detected modloader rather than executing unknown runners.
+        # No jar/runner → install detected modloader if possible
         if detected_loader:
             if detected_mc:
                 version = detected_mc
-            tell(f"No server jar found; installing detected {detected_loader} ({version}{' / '+detected_build if detected_build else ''})")
+            tell and tell(
+                f"No server jar found; installing detected {detected_loader} "
+                f"({version}{(' / ' + detected_build) if detected_build else ''})"
+            )
             flavor = detected_loader
         else:
-            tell("No server jar found; could not detect pack loader — falling back to chosen flavor.")
+            tell and tell(
+                "No server jar found; could not detect pack loader — falling back to chosen flavor."
+            )
 
     # Installer path (either no pack, or pack had no jar and we fell back / detected)
+    env = dict(os.environ)
+    env["JAVA_TOOL_OPTIONS"] = (env.get("JAVA_TOOL_OPTIONS", "") + " -Djava.awt.headless=true").strip()
+
     if flavor == "vanilla":
         url = vanilla_server_url(version)
         jar = dir / "server.jar"
@@ -346,58 +436,54 @@ def create_server(
         download_stream(inst, inst_jar, p, "Fetching installer")
         p.end("Installer ready.")
         p.start(0.25, "Running Fabric installer…")
-        # NOTE: We don't pin loader version here (works fine for most packs). 
-        # If you want to enforce a specific loader build (detected_build), we can add '-loader <ver>'.
         r = subprocess.run(
             [pick_java(), "-jar", str(inst_jar), "server", "-mcversion", version, "-downloadMinecraft"],
-            cwd=dir
+            cwd=dir,
+            env=env,
         )
         if r.returncode != 0:
             raise RuntimeError("Fabric installer failed")
         p.end("Fabric installed.")
 
     elif flavor == "forge":
-        # If pack pinned a Forge build (e.g. 47.3.5), use it; else choose recommended for mc.
-        if detected_build:
-            url = forge_installer_url_for_build(version, detected_build)
-        else:
-            url = forge_installer_url(version)
+        url = forge_installer_url_for_build(version, detected_build) if detected_build else forge_installer_url(version)
         inst_jar = dir / "forge-installer.jar"
         p.start(0.10, "Fetching Forge installer…")
         download_stream(url, inst_jar, p, "Fetching installer")
         p.end("Installer ready.")
         p.start(0.25, "Running Forge installer…")
-        r = subprocess.run([pick_java(), "-jar", str(inst_jar), "--installServer"], cwd=dir)
+        r = subprocess.run([pick_java(), "-jar", str(inst_jar), "--installServer"], cwd=dir, env=env)
         if r.returncode != 0:
             raise RuntimeError("Forge installer failed")
         p.end("Forge installed.")
+        # Prefer runner if generated
+        if (dir / "run.sh").exists() or (dir / "run.bat").exists():
+            make_scripts_invoke_runner(dir)
 
     elif flavor == "neoforge":
-        # If pack pinned a NeoForge build (e.g. 20.4.192), use it; else pick latest line for mc.
-        if detected_build:
-            url = neoforge_installer_url_for_build(detected_build)
-        else:
-            url = neoforge_installer_url(version)
+        url = neoforge_installer_url_for_build(detected_build) if detected_build else neoforge_installer_url(version)
         inst_jar = dir / "neoforge-installer.jar"
         p.start(0.10, "Fetching NeoForge installer…")
         download_stream(url, inst_jar, p, "Fetching installer")
         p.end("Installer ready.")
         p.start(0.25, "Running NeoForge installer…")
-        r = subprocess.run([pick_java(), "-jar", str(inst_jar), "--installServer"], cwd=dir)
+        r = subprocess.run([pick_java(), "-jar", str(inst_jar), "--installServer"], cwd=dir, env=env)
         if r.returncode != 0:
             raise RuntimeError("NeoForge installer failed")
         p.end("NeoForge installed.")
+        if (dir / "run.sh").exists() or (dir / "run.bat").exists():
+            make_scripts_invoke_runner(dir)
 
     else:
         raise RuntimeError(f"Unknown flavor: {flavor}")
 
-    # Write launchers after installer
-    p.start(0.10, "Writing start scripts…")
-    make_scripts(dir, xmx=xmx, xms=xms)
-    p.end("Launch scripts ready.")
+    # If installer didn’t create a runner (vanilla / fabric typically), write jar launcher.
+    if not (dir / "start.sh").exists():
+        p.start(0.10, "Writing start scripts…")
+        make_scripts(dir, xmx=xmx, xms=xms)
+        p.end("Launch scripts ready.")
 
     p.start(1.0 - p.base, "Finalizing…")
     p.end("Finished setup.")
-    tell("100% Done.")
+    tell and tell("100% Done.")
     return str(dir)
-
