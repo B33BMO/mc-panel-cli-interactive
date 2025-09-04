@@ -144,7 +144,6 @@ def _poll_pid_or_detect(d: Path, timeout: float = 10.0) -> Optional[int]:
             try:
                 cwd = p.info.get("cwd")
                 if cwd and Path(cwd) == d:
-                    # looks like our guy; persist a pid file
                     pid = int(p.info["pid"])
                     pid_path(d).write_text(str(pid))
                     return pid
@@ -156,11 +155,16 @@ def _poll_pid_or_detect(d: Path, timeout: float = 10.0) -> Optional[int]:
 
 
 def start(name: str) -> str:
+    """
+    Start logic:
+      • If pack/installer produced a run.sh (Forge/NeoForge), we use/ensure our wrapper start.sh and spawn it non-blocking.
+      • If vanilla/Fabric jar exists, launch the jar directly (non-blocking).
+      • Never hang the CLI; we poll briefly for a PID and return.
+    """
     d = server_dir(name)
     if running(name):
         return "Already running."
 
-    # Prefer our wrapper if present
     is_windows = platform.system() == "Windows"
     start_sh = d / "start.sh"
     start_bat = d / "start.bat"
@@ -168,39 +172,50 @@ def start(name: str) -> str:
 
     (d / "logs").mkdir(parents=True, exist_ok=True)
 
+    # ── Unix: prefer our wrapper that backgrounds run.sh (Forge/NeoForge path)
     if not is_windows:
-        if start_sh.exists():
-            # Call wrapper; it backgrounds and writes server.pid
-            try:
-                subprocess.run(["/bin/bash", "./start.sh"], cwd=d, check=False,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except FileNotFoundError:
-                # /bin/bash not found (rare), try sh
-                subprocess.run(["sh", "./start.sh"], cwd=d, check=False,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            pid = _poll_pid_or_detect(d, timeout=12.0)
-            return "Started." if pid else "Started (pid unknown yet). Check logs/console.log."
-        elif run_sh.exists():
-            # Create wrapper on the fly, then start
+        if run_sh.exists():
             _ensure_runner_wrapper(d)
+
+        if start_sh.exists():
             try:
-                subprocess.run(["/bin/bash", "./start.sh"], cwd=d, check=False,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                os.chmod(start_sh, 0o755)
+            except Exception:
+                pass
+            # Use Popen (never wait) in case a foreign start.sh would block.
+            try:
+                subprocess.Popen(
+                    ["/bin/bash", "./start.sh"],
+                    cwd=d,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
             except FileNotFoundError:
-                subprocess.run(["sh", "./start.sh"], cwd=d, check=False,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.Popen(
+                    ["sh", "./start.sh"],
+                    cwd=d,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
             pid = _poll_pid_or_detect(d, timeout=12.0)
             return "Started." if pid else "Started (pid unknown yet). Check logs/console.log."
 
+    # ── Windows: use start.bat if present
     else:
         if start_bat.exists():
-            subprocess.run(["cmd", "/c", "start.bat"], cwd=d, check=False,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            # best-effort: give it a moment and try to detect
+            subprocess.Popen(
+                ["cmd", "/c", "start.bat"],
+                cwd=d,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
             pid = _poll_pid_or_detect(d, timeout=8.0)
             return "Started." if pid else "Started (pid unknown yet)."
 
-    # Fallback: run a jar directly (vanilla/Fabric path)
+    # ── Fallback: launch a server jar directly (vanilla / Fabric path)
     jar = _find_jar(d)
     if not jar:
         return "No server jar found. Try `mccli.py create` again or check the server pack."
@@ -234,7 +249,6 @@ def stop(name: str, force: bool = False) -> str:
             )
         else:
             os.kill(pid, signal.SIGTERM)
-        # brief wait; if stubborn and force requested, escalate
         time.sleep(1.0)
         if force and _proc_is_running(pid):
             try:
