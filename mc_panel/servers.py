@@ -43,7 +43,6 @@ def running(name: str) -> bool:
         return False
     if _proc_is_running(pid):
         return True
-    # stale pid file, clean it up
     try:
         pid_path(d).unlink(missing_ok=True)
     except Exception:
@@ -52,34 +51,24 @@ def running(name: str) -> bool:
 
 
 def _find_jar(d: Path) -> Optional[str]:
-    """Prefer known, non-installer jars, then any *server*.jar (not *installer*)."""
     def is_server_jar(name: str) -> bool:
         low = name.lower()
         return low.endswith(".jar") and "installer" not in low and "install" not in low
 
-    # 1) explicit favorites
-    favs = ["fabric-server-launch.jar"]
-    for f in favs:
-        p = d / f
+    for fav in ["fabric-server-launch.jar"]:
+        p = d / fav
         if p.exists() and is_server_jar(p.name):
             return p.name
 
-    # 2) collect all jars in dir (skip installers)
     jars = [p.name for p in d.glob("*.jar") if is_server_jar(p.name)]
-
-    # 3) prefer forge/neoforge/versioned, then vanilla
-    prefs = ("forge-", "neoforge-", "minecraft_server", "server")
-    for pref in prefs:
+    for pref in ("forge-", "neoforge-", "minecraft_server", "server"):
         for j in sorted(jars):
             if j.startswith(pref):
                 return j
-
-    # 4) fallback
     return jars[0] if jars else None
 
 
 def _mem_from_start_sh(d: Path) -> tuple[str, str]:
-    """Parse Xms/Xmx from start.sh; default to 1G/4G if not found."""
     xms, xmx = "1G", "4G"
     sh = d / "start.sh"
     if not sh.exists():
@@ -98,10 +87,6 @@ def _mem_from_start_sh(d: Path) -> tuple[str, str]:
 
 
 def _ensure_runner_wrapper(d: Path) -> None:
-    """
-    If only run.sh exists (Forge/NeoForge installer output), create start.sh wrapper
-    that backgrounds run.sh and writes server.pid. Idempotent.
-    """
     start_sh = d / "start.sh"
     if start_sh.exists():
         return
@@ -121,46 +106,36 @@ def _ensure_runner_wrapper(d: Path) -> None:
     os.chmod(start_sh, 0o755)
 
 
-def _poll_pid_or_detect(d: Path, timeout: float = 10.0) -> Optional[int]:
-    """
-    Poll for server.pid to appear, else try to detect a java process with cwd==d.
-    Returns PID or None.
-    """
+def _poll_pid_or_detect(d: Path, timeout: float = 15.0) -> Optional[int]:
     t0 = time.time()
-    # first, poll for pid file
     while time.time() - t0 < timeout:
         pid = read_pid(d)
         if pid and _proc_is_running(pid):
             return pid
         time.sleep(0.25)
 
-    # fallback: try to find a java process started in this dir
+    # Fallback: find java in this cwd, prefer deepest child
     try:
         import psutil
-        for p in psutil.process_iter(["pid", "name", "cwd", "cmdline"]):
+        best: Optional[int] = None
+        for p in psutil.process_iter(["pid", "name", "cwd", "ppid", "cmdline"]):
             name = (p.info.get("name") or "").lower()
             if "java" not in name:
                 continue
             try:
-                cwd = p.info.get("cwd")
-                if cwd and Path(cwd) == d:
-                    pid = int(p.info["pid"])
-                    pid_path(d).write_text(str(pid))
-                    return pid
+                if p.info.get("cwd") and Path(p.info["cwd"]) == d:
+                    best = p.info["pid"]
             except Exception:
                 continue
+        if best:
+            pid_path(d).write_text(str(best))
+            return best
     except Exception:
         pass
     return None
 
 
 def start(name: str) -> str:
-    """
-    Start logic:
-      • If pack/installer produced a run.sh (Forge/NeoForge), we use/ensure our wrapper start.sh and spawn it non-blocking.
-      • If vanilla/Fabric jar exists, launch the jar directly (non-blocking).
-      • Never hang the CLI; we poll briefly for a PID and return.
-    """
     d = server_dir(name)
     if running(name):
         return "Already running."
@@ -172,7 +147,7 @@ def start(name: str) -> str:
 
     (d / "logs").mkdir(parents=True, exist_ok=True)
 
-    # ── Unix: prefer our wrapper that backgrounds run.sh (Forge/NeoForge path)
+    # Unix: prefer wrapper / start.sh (Forge/NeoForge path)
     if not is_windows:
         if run_sh.exists():
             _ensure_runner_wrapper(d)
@@ -182,9 +157,9 @@ def start(name: str) -> str:
                 os.chmod(start_sh, 0o755)
             except Exception:
                 pass
-            # Use Popen (never wait) in case a foreign start.sh would block.
+            # Spawn non-blocking and record PID immediately
             try:
-                subprocess.Popen(
+                proc = subprocess.Popen(
                     ["/bin/bash", "./start.sh"],
                     cwd=d,
                     stdout=subprocess.DEVNULL,
@@ -192,30 +167,38 @@ def start(name: str) -> str:
                     start_new_session=True,
                 )
             except FileNotFoundError:
-                subprocess.Popen(
+                proc = subprocess.Popen(
                     ["sh", "./start.sh"],
                     cwd=d,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,
                 )
-            pid = _poll_pid_or_detect(d, timeout=12.0)
-            return "Started." if pid else "Started (pid unknown yet). Check logs/console.log."
+            pid_path(d).write_text(str(proc.pid))  # record something right away
 
-    # ── Windows: use start.bat if present
+            # Try to resolve to the actual Java pid
+            real = _poll_pid_or_detect(d, timeout=12.0)
+            if real and real != proc.pid:
+                pid_path(d).write_text(str(real))
+            return "Started." if (real or _proc_is_running(proc.pid)) else "Started (pid unknown yet). Check logs/console.log."
+
+    # Windows
     else:
         if start_bat.exists():
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 ["cmd", "/c", "start.bat"],
                 cwd=d,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
-            pid = _poll_pid_or_detect(d, timeout=8.0)
-            return "Started." if pid else "Started (pid unknown yet)."
+            pid_path(d).write_text(str(proc.pid))
+            real = _poll_pid_or_detect(d, timeout=8.0)
+            if real and real != proc.pid:
+                pid_path(d).write_text(str(real))
+            return "Started." if (real or _proc_is_running(proc.pid)) else "Started (pid unknown yet)."
 
-    # ── Fallback: launch a server jar directly (vanilla / Fabric path)
+    # Fallback: launch jar directly
     jar = _find_jar(d)
     if not jar:
         return "No server jar found. Try `mccli.py create` again or check the server pack."
@@ -248,13 +231,25 @@ def stop(name: str, force: bool = False) -> str:
                 stderr=subprocess.DEVNULL,
             )
         else:
-            os.kill(pid, signal.SIGTERM)
-        time.sleep(1.0)
-        if force and _proc_is_running(pid):
+            # Try stopping both the pid and its process group
             try:
-                os.kill(pid, signal.SIGKILL)
+                os.kill(pid, signal.SIGTERM)
             except Exception:
                 pass
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+            except Exception:
+                pass
+            time.sleep(1.0)
+            if force and _proc_is_running(pid):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except Exception:
+                    pass
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+                except Exception:
+                    pass
     except ProcessLookupError:
         pass
     except Exception:
