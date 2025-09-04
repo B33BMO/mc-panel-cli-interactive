@@ -100,7 +100,7 @@ def _find_jar(d: Path) -> Optional[str]:
 
 def _mem_from_env() -> tuple[str, str]:
     xms = os.environ.get("XMS", "1G")
-    xmx = os.environ.get("XMX", "4G")
+    xmx = os.environ.get("XMX", "12G")
     return xms, xmx
 
 # ───────────────────────────── Start/Stop/Stats ─────────────────────────────
