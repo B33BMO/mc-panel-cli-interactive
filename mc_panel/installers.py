@@ -240,22 +240,57 @@ def neoforge_installer_url_for_build(build: str) -> str:
 # ───────────────────────────── launcher scripts ─────────────────────────────
 
 
-def make_scripts_invoke_runner(dir: Path):
+def make_scripts(dir: Path, xmx: str, xms: str):
     sh = dir / "start.sh"
-    sh.write_text(
-        '#!/usr/bin/env bash\n'
-        'set -euo pipefail\n'
-        'cd "$(dirname "$0")"\n'
-        'mkdir -p logs\n'
-        ': > logs/console.log\n'
-        'chmod +x "./run.sh" 2>/dev/null || true\n'
-        'nohup ./run.sh >> logs/console.log 2>&1 &\n'
-        'echo $! > server.pid\n'
-        'exit 0\n',
-        encoding="utf-8",
-    )
+    content_sh = f"""#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+
+JAVA_BIN="${{JAVA_BIN:-{pick_java()}}}"
+mkdir -p logs
+: > logs/console.log
+
+JAR=""
+
+# Jar detection
+shopt -s nullglob
+candidates=(fabric-server-launch.jar fabric-server-launcher.jar fabric-installer*.jar forge-*.jar neoforge-*.jar server.jar *server*.jar *.jar)
+for pat in "${{candidates[@]}}"; do
+  for f in $pat; do
+    low="${{f,,}}"
+    if [[ "$low" == fabric-installer*.jar || "$low" == fabric-server-launch*.jar || "$low" == fabric-server-launcher*.jar ]]; then
+      JAR="$f"; break 2
+    fi
+    if [[ "$low" != *install* ]]; then
+      JAR="$f"; break 2
+    fi
+  done
+done
+shopt -u nullglob
+
+if [[ -z "$JAR" ]]; then
+  echo "[start.sh] No server jar found in $(pwd)" >> logs/console.log
+  ls -1 *.jar 2>/dev/null >> logs/console.log || true
+  exit 1
+fi
+
+XMS="${{XMS:-{xms}}}"
+XMX="${{XMX:-{xmx}}}"
+
+# Fabric rule
+if [[ "${{JAR,,}}" == fabric-server-launch*.jar || "${{JAR,,}}" == fabric-server-launcher*.jar || "${{JAR,,}}" == fabric-installer*.jar ]]; then
+  nohup "$JAVA_BIN" -jar "$JAR" >> logs/console.log 2>&1 &
+  echo $! > server.pid
+  exit 0
+fi
+
+nohup "$JAVA_BIN" -Xms"$XMS" -Xmx"$XMX" -jar "$JAR" nogui >> logs/console.log 2>&1 &
+echo $! > server.pid
+exit 0
+"""
+    sh.write_text(content_sh, encoding="utf-8")
     os.chmod(sh, 0o755)
-    # (bat stays as-is)
+
 
 
 def make_scripts(dir: Path, xmx: str, xms: str):
