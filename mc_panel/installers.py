@@ -215,14 +215,16 @@ def make_scripts(dir: Path, xmx: str, xms: str):
 cd "$(dirname "$0")"
 JAVA_BIN="${{JAVA_BIN:-{pick_java()}}}"
 JAR=""
+# try explicit order first
 for C in "fabric-server-launch.jar" "forge-*.jar" "neoforge-*.jar" "server.jar"; do
-  CAND=$(ls -1 $C 2>/dev/null | head -n1)
+  CAND=$(ls -1 $C 2>/dev/null | grep -vi installer | head -n1)
   if [ -n "$CAND" ]; then JAR="$CAND"; break; fi
 done
+# generic fallback: any *server*.jar that isn't an installer
 if [ -z "$JAR" ]; then
-  JAR=$(ls -1 *server*.jar 2>/dev/null | head -n1)
+  JAR=$(ls -1 *server*.jar 2>/dev/null | grep -vi installer | head -n1)
 fi
-[ -z "$JAR" ] && echo "No server jar found." && exit 1
+
 mkdir -p logs
 nohup "$JAVA_BIN" -Xms{xms} -Xmx{xmx} -jar "$JAR" nogui >> logs/console.log 2>&1 &
 echo $! > server.pid

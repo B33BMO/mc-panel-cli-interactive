@@ -30,12 +30,31 @@ def running(name: str) -> bool:
         return False
 
 def _find_jar(d: Path) -> Optional[str]:
-    # Prefer known server jars, then any *server*.jar
-    for pat in ["fabric-server-launch.jar", "forge-*.jar", "neoforge-*.jar", "server.jar", "*server*.jar"]:
-        for p in sorted(d.glob(pat)):
-            if p.is_file():
-                return p.name
-    return None
+    # Prefer known, non-installer jars
+    def is_server_jar(name: str) -> bool:
+        low = name.lower()
+        return low.endswith(".jar") and "installer" not in low and "install" not in low
+
+    # 1) Explicit favorites in order
+    favs = ["fabric-server-launch.jar"]
+    for f in favs:
+        p = d / f
+        if p.exists() and is_server_jar(p.name):
+            return p.name
+
+    # 2) Collect all jars, filter out installers
+    jars = [p.name for p in d.glob("*.jar") if is_server_jar(p.name)]
+
+    # 3) Prefer forge/neoforge versioned jars, then vanilla
+    prefs = ("forge-", "neoforge-", "minecraft_server", "server")
+    for pref in prefs:
+        for j in sorted(jars):
+            if j.startswith(pref):
+                return j
+
+    # 4) Fallback: first non-installer jar if any
+    return jars[0] if jars else None
+
 
 def _mem_from_start_sh(d: Path) -> tuple[str, str]:
     # Default to 1G/4G if we can't parse start.sh
