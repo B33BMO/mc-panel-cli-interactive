@@ -208,6 +208,7 @@ def start(name: str) -> str:
             return "Started." if (real or _proc_is_running(proc.pid)) else "Started (pid pending)."
 
     # Fallback: launch jar directly (vanilla/fabric typical path)
+        # Fallback: launch jar directly (vanilla/fabric typical path)
     jar = _find_jar(d)
     if not jar:
         return "No server jar found. Try reinstalling or check the server pack."
@@ -215,16 +216,33 @@ def start(name: str) -> str:
 
     out_path = d / "logs" / "console.log"
     with open(out_path, "ab") as out:
-        proc = subprocess.Popen(
-            [pick_java(), f"-Xms{xms}", f"-Xmx{xmx}", "-jar", jar, "nogui"],
-            cwd=d,
-            stdout=out,
-            stderr=out,
-            start_new_session=True,
+        low = jar.lower()
+        is_fabric = (
+            low.startswith("fabric-server-launch") or
+            low.startswith("fabric-server-launcher") or
+            low.startswith("fabric-installer")
         )
+        if is_fabric:
+            # Fabric rule: run installer/launcher with plain -jar (no nogui/heap flags)
+            proc = subprocess.Popen(
+                [pick_java(), "-jar", jar],
+                cwd=d,
+                stdout=out,
+                stderr=out,
+                start_new_session=True,
+            )
+        else:
+            proc = subprocess.Popen(
+                [pick_java(), f"-Xms{xms}", f"-Xmx{xmx}", "-jar", jar, "nogui"],
+                cwd=d,
+                stdout=out,
+                stderr=out,
+                start_new_session=True,
+            )
     pid_path(d).write_text(str(proc.pid))
     time.sleep(1.0)
     return "Started."
+
 
 def stop(name: str, force: bool = False) -> str:
     d = server_dir(name)
