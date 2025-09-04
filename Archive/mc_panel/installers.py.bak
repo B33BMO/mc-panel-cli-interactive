@@ -266,20 +266,19 @@ cd "$(dirname "$0")"
 
 JAVA_BIN="${{JAVA_BIN:-{pick_java()}}}"
 mkdir -p logs
-: > logs/console.log
+: > logs/console.log   # ensure the file exists so 'mc logs' has something to read
 
 JAR=""
 
+# Robust jar discovery (skip installers). Works even if only server.jar is present.
 shopt -s nullglob
-candidates=(fabric-server-launch.jar fabric-server-launcher.jar fabric-installer*.jar forge-*.jar neoforge-*.jar server.jar *server*.jar *.jar)
+candidates=(fabric-server-launch.jar forge-*.jar neoforge-*.jar server.jar *server*.jar *.jar)
 for pat in "${{candidates[@]}}"; do
   for f in $pat; do
     low="${{f,,}}"
-    if [[ "$low" == fabric-installer*.jar || "$low" == fabric-server-launch*.jar || "$low" == fabric-server-launcher*.jar ]]; then
-      JAR="$f"; break 2
-    fi
     if [[ "$low" != *install* ]]; then
-      JAR="$f"; break 2
+      JAR="$f"
+      break 2
     fi
   done
 done
@@ -287,6 +286,7 @@ shopt -u nullglob
 
 if [[ -z "$JAR" ]]; then
   echo "[start.sh] No server jar found in $(pwd)" >> logs/console.log
+  echo "[start.sh] Jars present:" >> logs/console.log
   ls -1 *.jar 2>/dev/null >> logs/console.log || true
   exit 1
 fi
@@ -294,12 +294,7 @@ fi
 XMS="${{XMS:-{xms}}}"
 XMX="${{XMX:-{xmx}}}"
 
-if [[ "${{JAR,,}}" == fabric-server-launch*.jar || "${{JAR,,}}" == fabric-server-launcher*.jar || "${{JAR,,}}" == fabric-installer*.jar ]]; then
-  nohup "$JAVA_BIN" -jar "$JAR" >> logs/console.log 2>&1 &
-  echo $! > server.pid
-  exit 0
-fi
-
+# Run in background and record a pid right away
 nohup "$JAVA_BIN" -Xms"$XMS" -Xmx"$XMX" -jar "$JAR" nogui >> logs/console.log 2>&1 &
 echo $! > server.pid
 exit 0
@@ -307,14 +302,14 @@ exit 0
     sh.write_text(content_sh, encoding="utf-8"); os.chmod(sh, 0o755)
 
     bat = dir / "start.bat"
-    bat_content = (
+    bat.write_text(
         '@echo off\r\n'
         'cd /d %~dp0\r\n'
         'if not exist logs mkdir logs\r\n'
         'type NUL >> logs\\console.log\r\n'
         f'set "JAVA_BIN={pick_java()}"\r\n'
         'set "JAR="\r\n'
-        'for %%f in (fabric-server-launch.jar fabric-server-launcher.jar fabric-installer*.jar forge-*.jar neoforge-*.jar server.jar) do if not defined JAR if exist "%%f" set "JAR=%%f"\r\n'
+        'for %%f in (fabric-server-launch.jar forge-*.jar neoforge-*.jar server.jar) do if not defined JAR if exist "%%f" set "JAR=%%f"\r\n'
         'if not defined JAR for %%f in (*server*.jar) do if not defined JAR if exist "%%f" set "JAR=%%f"\r\n'
         'if not defined JAR for %%f in (*.jar) do if not defined JAR if exist "%%f" (\r\n'
         '  echo %%f | find /I "install" >nul || set "JAR=%%f"\r\n'
@@ -324,17 +319,13 @@ exit 0
         '  dir /b *.jar >> logs\\console.log\r\n'
         '  exit /b 1\r\n'
         ')\r\n'
-        'set "L=__"\r\n'
-        'echo %JAR% | find /I "fabric-server-launch" >nul && set "L=fabric"\r\n'
-        'echo %JAR% | find /I "fabric-server-launcher" >nul && set "L=fabric"\r\n'
-        'echo %JAR% | find /I "fabric-installer" >nul && set "L=fabric"\r\n'
-        'if "%L%"=="fabric" (\r\n'
-        '  start "" /min "%JAVA_BIN%" -jar "%JAR%"\r\n'
-        ') else (\r\n'
-        f'  start "" /min "%JAVA_BIN%" -Xms{xms} -Xmx{xmx} -jar "%JAR%" nogui\r\n'
-        ')\r\n'
+        'start "" /min "%JAVA_BIN%" -Xms' + xms + ' -Xmx' + xmx + ' -jar "%JAR%" nogui\r\n',
+        encoding="utf-8",
     )
-    bat.write_text(bat_content, encoding="utf-8")
+
+
+
+# ───────────────────────────── create pipeline ─────────────────────────────
 
 
 def create_server(

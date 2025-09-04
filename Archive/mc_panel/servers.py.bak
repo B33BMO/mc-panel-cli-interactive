@@ -53,11 +53,9 @@ def running(name: str) -> bool:
 def _find_jar(d: Path) -> Optional[str]:
     def is_server_jar(name: str) -> bool:
         low = name.lower()
-        if low.startswith("fabric-installer") and low.endswith(".jar"):
-            return True
         return low.endswith(".jar") and "installer" not in low and "install" not in low
 
-    for fav in ("fabric-server-launch.jar", "fabric-server-launcher.jar", "fabric-installer.jar"):
+    for fav in ["fabric-server-launch.jar"]:
         p = d / fav
         if p.exists() and is_server_jar(p.name):
             return p.name
@@ -161,35 +159,21 @@ def start(name: str) -> str:
                 pass
             # Spawn non-blocking and record PID immediately
             try:
-                        # Fabric rule: run installer-or-launcher with java -jar
-        low = jar.lower()
-        if low.startswith("fabric-server-launch") or low.startswith("fabric-server-launcher") or low.startswith("fabric-installer"):
-            cmd = [pick_java(), "-jar", jar]
-        else:
-            xms, xmx = _mem_from_start_sh(d)
-            cmd = [pick_java(), f"-Xms{xms}", f"-Xmx{xmx}", "-jar", jar, "nogui"]
-        proc = subprocess.Popen(
-            cmd,
-            cwd=d,
-            stdout=out,
-            stderr=out,
-            start_new_session=True,
-        )
+                proc = subprocess.Popen(
+                    ["/bin/bash", "./start.sh"],
+                    cwd=d,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
             except FileNotFoundError:
-                        # Fabric rule: run installer-or-launcher with java -jar
-        low = jar.lower()
-        if low.startswith("fabric-server-launch") or low.startswith("fabric-server-launcher") or low.startswith("fabric-installer"):
-            cmd = [pick_java(), "-jar", jar]
-        else:
-            xms, xmx = _mem_from_start_sh(d)
-            cmd = [pick_java(), f"-Xms{xms}", f"-Xmx{xmx}", "-jar", jar, "nogui"]
-        proc = subprocess.Popen(
-            cmd,
-            cwd=d,
-            stdout=out,
-            stderr=out,
-            start_new_session=True,
-        )
+                proc = subprocess.Popen(
+                    ["sh", "./start.sh"],
+                    cwd=d,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
             pid_path(d).write_text(str(proc.pid))  # record something right away
 
             # Try to resolve to the actual Java pid
@@ -201,20 +185,13 @@ def start(name: str) -> str:
     # Windows
     else:
         if start_bat.exists():
-                    # Fabric rule: run installer-or-launcher with java -jar
-        low = jar.lower()
-        if low.startswith("fabric-server-launch") or low.startswith("fabric-server-launcher") or low.startswith("fabric-installer"):
-            cmd = [pick_java(), "-jar", jar]
-        else:
-            xms, xmx = _mem_from_start_sh(d)
-            cmd = [pick_java(), f"-Xms{xms}", f"-Xmx{xmx}", "-jar", jar, "nogui"]
-        proc = subprocess.Popen(
-            cmd,
-            cwd=d,
-            stdout=out,
-            stderr=out,
-            start_new_session=True,
-        )
+            proc = subprocess.Popen(
+                ["cmd", "/c", "start.bat"],
+                cwd=d,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
             pid_path(d).write_text(str(proc.pid))
             real = _poll_pid_or_detect(d, timeout=8.0)
             if real and real != proc.pid:
@@ -227,27 +204,15 @@ def start(name: str) -> str:
         return "No server jar found. Try `mccli.py create` again or check the server pack."
     xms, xmx = _mem_from_start_sh(d)
 
-        out_path = d / "logs" / "console.log"
+    out_path = d / "logs" / "console.log"
     with open(out_path, "ab") as out:
-        try:
-            # Fabric rule: run installer-or-launcher with java -jar
-            low = jar.lower()
-            if low.startswith("fabric-server-launch") or low.startswith("fabric-server-launcher") or low.startswith("fabric-installer"):
-                cmd = [pick_java(), "-jar", jar]
-            else:
-                xms, xmx = _mem_from_start_sh(d)
-                cmd = [pick_java(), f"-Xms{xms}", f"-Xmx{xmx}", "-jar", jar, "nogui"]
-
-            proc = subprocess.Popen(
-                cmd,
-                cwd=d,
-                stdout=out,
-                stderr=out,
-                start_new_session=True,
-            )
-        except Exception as e:
-            return f"Failed to start: {e}"
-
+        proc = subprocess.Popen(
+            [pick_java(), f"-Xms{xms}", f"-Xmx{xmx}", "-jar", jar, "nogui"],
+            cwd=d,
+            stdout=out,
+            stderr=out,
+            start_new_session=True,
+        )
     pid_path(d).write_text(str(proc.pid))
     time.sleep(1.0)
     return "Started."
