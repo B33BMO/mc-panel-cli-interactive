@@ -227,22 +227,27 @@ def start(name: str) -> str:
         return "No server jar found. Try `mccli.py create` again or check the server pack."
     xms, xmx = _mem_from_start_sh(d)
 
-    out_path = d / "logs" / "console.log"
+        out_path = d / "logs" / "console.log"
     with open(out_path, "ab") as out:
-                # Fabric rule: run installer-or-launcher with java -jar
-        low = jar.lower()
-        if low.startswith("fabric-server-launch") or low.startswith("fabric-server-launcher") or low.startswith("fabric-installer"):
-            cmd = [pick_java(), "-jar", jar]
-        else:
-            xms, xmx = _mem_from_start_sh(d)
-            cmd = [pick_java(), f"-Xms{xms}", f"-Xmx{xmx}", "-jar", jar, "nogui"]
-        proc = subprocess.Popen(
-            cmd,
-            cwd=d,
-            stdout=out,
-            stderr=out,
-            start_new_session=True,
-        )
+        try:
+            # Fabric rule: run installer-or-launcher with java -jar
+            low = jar.lower()
+            if low.startswith("fabric-server-launch") or low.startswith("fabric-server-launcher") or low.startswith("fabric-installer"):
+                cmd = [pick_java(), "-jar", jar]
+            else:
+                xms, xmx = _mem_from_start_sh(d)
+                cmd = [pick_java(), f"-Xms{xms}", f"-Xmx{xmx}", "-jar", jar, "nogui"]
+
+            proc = subprocess.Popen(
+                cmd,
+                cwd=d,
+                stdout=out,
+                stderr=out,
+                start_new_session=True,
+            )
+        except Exception as e:
+            return f"Failed to start: {e}"
+
     pid_path(d).write_text(str(proc.pid))
     time.sleep(1.0)
     return "Started."
