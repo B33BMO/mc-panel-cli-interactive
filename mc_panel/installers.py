@@ -241,12 +241,13 @@ def neoforge_installer_url_for_build(build: str) -> str:
 
 
 def make_scripts_invoke_runner(dir: Path):
-    """Create start.sh that just backgrounds the pack/installer-provided run.sh."""
     sh = dir / "start.sh"
     sh.write_text(
         '#!/usr/bin/env bash\n'
+        'set -euo pipefail\n'
         'cd "$(dirname "$0")"\n'
         'mkdir -p logs\n'
+        ': > logs/console.log\n'
         'chmod +x "./run.sh" 2>/dev/null || true\n'
         'nohup ./run.sh >> logs/console.log 2>&1 &\n'
         'echo $! > server.pid\n'
@@ -254,69 +255,74 @@ def make_scripts_invoke_runner(dir: Path):
         encoding="utf-8",
     )
     os.chmod(sh, 0o755)
-
-    # Minimal Windows helper (expects run.bat to exist if on Windows)
-    bat = dir / "start.bat"
-    bat.write_text(
-        '@echo off\r\n'
-        'cd /d %~dp0\r\n'
-        'if exist run.bat start "" /min cmd /c run.bat\r\n'
-        'if not exist run.bat echo No run.bat present. Use start.sh on Unix.\r\n',
-        encoding="utf-8",
-    )
+    # (bat stays as-is)
 
 
 def make_scripts(dir: Path, xmx: str, xms: str):
-    """Create start.sh that discovers a server jar (skipping *installer*)."""
     sh = dir / "start.sh"
     content_sh = f'''#!/usr/bin/env bash
+set -euo pipefail
 cd "$(dirname "$0")"
+
 JAVA_BIN="${{JAVA_BIN:-{pick_java()}}}"
+mkdir -p logs
+: > logs/console.log   # ensure the file exists so 'mc logs' has something to read
+
 JAR=""
 
-# explicit order first (skip installers)
-for C in "fabric-server-launch.jar" "forge-*.jar" "neoforge-*.jar" "server.jar"; do
-  CAND=$(ls -1 $C 2>/dev/null | grep -vi installer | head -n1)
-  if [ -n "$CAND" ]; then JAR="$CAND"; break; fi
+# Robust jar discovery (skip installers). Works even if only server.jar is present.
+shopt -s nullglob
+candidates=(fabric-server-launch.jar forge-*.jar neoforge-*.jar server.jar *server*.jar *.jar)
+for pat in "${{candidates[@]}}"; do
+  for f in $pat; do
+    low="${{f,,}}"
+    if [[ "$low" != *install* ]]; then
+      JAR="$f"
+      break 2
+    fi
+  done
 done
+shopt -u nullglob
 
-# generic fallback: any *server*.jar that isn't an installer
-if [ -z "$JAR" ]; then
-  JAR=$(ls -1 *server*.jar 2>/dev/null | grep -vi installer | head -n1)
-fi
-
-if [ -z "$JAR" ]; then
-  echo "No server jar found. Try 'mccli.py create' again or check the server pack." >&2
+if [[ -z "$JAR" ]]; then
+  echo "[start.sh] No server jar found in $(pwd)" >> logs/console.log
+  echo "[start.sh] Jars present:" >> logs/console.log
+  ls -1 *.jar 2>/dev/null >> logs/console.log || true
   exit 1
 fi
 
-mkdir -p logs
 XMS="${{XMS:-{xms}}}"
 XMX="${{XMX:-{xmx}}}"
+
+# Run in background and record a pid right away
 nohup "$JAVA_BIN" -Xms"$XMS" -Xmx"$XMX" -jar "$JAR" nogui >> logs/console.log 2>&1 &
 echo $! > server.pid
 exit 0
 '''
-    sh.write_text(content_sh, encoding="utf-8")
-    os.chmod(sh, 0o755)
+    sh.write_text(content_sh, encoding="utf-8"); os.chmod(sh, 0o755)
 
     bat = dir / "start.bat"
     bat.write_text(
         '@echo off\r\n'
         'cd /d %~dp0\r\n'
+        'if not exist logs mkdir logs\r\n'
+        'type NUL >> logs\\console.log\r\n'
         f'set "JAVA_BIN={pick_java()}"\r\n'
         'set "JAR="\r\n'
-        'for %%f in (fabric-server-launch.jar forge-*.jar neoforge-*.jar server.jar) do (\r\n'
-        '  if not defined JAR if exist "%%f" set "JAR=%%f"\r\n'
+        'for %%f in (fabric-server-launch.jar forge-*.jar neoforge-*.jar server.jar) do if not defined JAR if exist "%%f" set "JAR=%%f"\r\n'
+        'if not defined JAR for %%f in (*server*.jar) do if not defined JAR if exist "%%f" set "JAR=%%f"\r\n'
+        'if not defined JAR for %%f in (*.jar) do if not defined JAR if exist "%%f" (\r\n'
+        '  echo %%f | find /I "install" >nul || set "JAR=%%f"\r\n'
         ')\r\n'
-        'if not defined JAR for %%f in (*server*.jar) do (\r\n'
-        '  if not defined JAR if exist "%%f" set "JAR=%%f"\r\n'
+        'if not defined JAR (\r\n'
+        '  echo [start.bat] No server jar found.> logs\\console.log\r\n'
+        '  dir /b *.jar >> logs\\console.log\r\n'
+        '  exit /b 1\r\n'
         ')\r\n'
-        'if not defined JAR echo No server jar found.& exit /b 1\r\n'
-        'mkdir logs 2>nul\r\n'
-        f'start "" /min "%JAVA_BIN%" -Xms{xms} -Xmx{xmx} -jar "%JAR%" nogui\r\n',
+        'start "" /min "%JAVA_BIN%" -Xms' + xms + ' -Xmx' + xmx + ' -jar "%JAR%" nogui\r\n',
         encoding="utf-8",
     )
+
 
 
 # ───────────────────────────── create pipeline ─────────────────────────────
