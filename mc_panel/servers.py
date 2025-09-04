@@ -1,5 +1,4 @@
-
-# mc_panel/servers.py — hardened
+# mc_panel/servers.py
 from __future__ import annotations
 
 import os
@@ -13,10 +12,10 @@ from typing import Optional, Dict, Any
 
 from .util import server_dir, pick_java, bytes_fmt
 
-# ───────────────────────────── PID helpers ─────────────────────────────
 
 def pid_path(dir: Path) -> Path:
     return dir / "server.pid"
+
 
 def read_pid(dir: Path) -> Optional[int]:
     p = pid_path(dir)
@@ -27,6 +26,7 @@ def read_pid(dir: Path) -> Optional[int]:
             return None
     return None
 
+
 def _proc_is_running(pid: int) -> bool:
     try:
         import psutil
@@ -34,6 +34,7 @@ def _proc_is_running(pid: int) -> bool:
         return proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
     except Exception:
         return False
+
 
 def running(name: str) -> bool:
     d = server_dir(name)
@@ -48,26 +49,26 @@ def running(name: str) -> bool:
         pass
     return False
 
-# ───────────────────────────── Jar + mem detection ─────────────────────────────
 
 def _find_jar(d: Path) -> Optional[str]:
     def is_server_jar(name: str) -> bool:
         low = name.lower()
-        return low.endswith(".jar") and "installer" not in low and "install" not in low and "shim" not in low and "client" not in low
+        if low.startswith("fabric-installer") and low.endswith(".jar"):
+            return True
+        return low.endswith(".jar") and "installer" not in low and "install" not in low
 
-    # Priority list: fabric launcher first, then common server jar patterns
-    for fav in ("fabric-server-launch.jar", "fabric-server-launcher.jar"):
+    for fav in ("fabric-server-launch.jar", "fabric-server-launcher.jar", "fabric-installer.jar"):
         p = d / fav
         if p.exists() and is_server_jar(p.name):
             return p.name
 
     jars = [p.name for p in d.glob("*.jar") if is_server_jar(p.name)]
-    jars = sorted(jars)
     for pref in ("forge-", "neoforge-", "minecraft_server", "server"):
-        for j in jars:
+        for j in sorted(jars):
             if j.startswith(pref):
                 return j
     return jars[0] if jars else None
+
 
 def _mem_from_start_sh(d: Path) -> tuple[str, str]:
     xms, xmx = "1G", "4G"
@@ -86,28 +87,18 @@ def _mem_from_start_sh(d: Path) -> tuple[str, str]:
         pass
     return xms, xmx
 
-# ───────────────────────────── Runner wrapper ─────────────────────────────
 
 def _ensure_runner_wrapper(d: Path) -> None:
-    """
-    If a pack generated run.sh (Forge/NeoForge), create a wrapper start.sh that:
-      - ensures logs/console.log exists
-      - backgrounds the process
-      - writes server.pid immediately
-    """
     start_sh = d / "start.sh"
     if start_sh.exists():
         return
     run_sh = d / "run.sh"
     if not run_sh.exists():
         return
-
     start_sh.write_text(
         '#!/usr/bin/env bash\n'
-        'set -euo pipefail\n'
         'cd "$(dirname "$0")"\n'
         'mkdir -p logs\n'
-        ': > logs/console.log\n'
         'chmod +x "./run.sh" 2>/dev/null || true\n'
         'nohup ./run.sh >> logs/console.log 2>&1 &\n'
         'echo $! > server.pid\n'
@@ -115,6 +106,7 @@ def _ensure_runner_wrapper(d: Path) -> None:
         encoding="utf-8",
     )
     os.chmod(start_sh, 0o755)
+
 
 def _poll_pid_or_detect(d: Path, timeout: float = 15.0) -> Optional[int]:
     t0 = time.time()
@@ -124,11 +116,11 @@ def _poll_pid_or_detect(d: Path, timeout: float = 15.0) -> Optional[int]:
             return pid
         time.sleep(0.25)
 
-    # Fallback: search for java whose cwd == d
+    # Fallback: find java in this cwd, prefer deepest child
     try:
         import psutil
         best: Optional[int] = None
-        for p in psutil.process_iter(["pid", "name", "cwd"]):
+        for p in psutil.process_iter(["pid", "name", "cwd", "ppid", "cmdline"]):
             name = (p.info.get("name") or "").lower()
             if "java" not in name:
                 continue
@@ -144,7 +136,6 @@ def _poll_pid_or_detect(d: Path, timeout: float = 15.0) -> Optional[int]:
         pass
     return None
 
-# ───────────────────────────── Start/Stop/Stats ─────────────────────────────
 
 def start(name: str) -> str:
     d = server_dir(name)
@@ -158,8 +149,8 @@ def start(name: str) -> str:
 
     (d / "logs").mkdir(parents=True, exist_ok=True)
 
+    # Unix: prefer wrapper / start.sh (Forge/NeoForge path)
     if not is_windows:
-        # Always prepare wrapper if run.sh exists
         if run_sh.exists():
             _ensure_runner_wrapper(d)
 
@@ -168,55 +159,85 @@ def start(name: str) -> str:
                 os.chmod(start_sh, 0o755)
             except Exception:
                 pass
-            # Launch detached so it won't seize the user's terminal
+            # Spawn non-blocking and record PID immediately
             try:
-                proc = subprocess.Popen(
-                    ["/bin/bash", "./start.sh"],
-                    cwd=d,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
+                        # Fabric rule: run installer-or-launcher with java -jar
+        low = jar.lower()
+        if low.startswith("fabric-server-launch") or low.startswith("fabric-server-launcher") or low.startswith("fabric-installer"):
+            cmd = [pick_java(), "-jar", jar]
+        else:
+            xms, xmx = _mem_from_start_sh(d)
+            cmd = [pick_java(), f"-Xms{xms}", f"-Xmx{xmx}", "-jar", jar, "nogui"]
+        proc = subprocess.Popen(
+            cmd,
+            cwd=d,
+            stdout=out,
+            stderr=out,
+            start_new_session=True,
+        )
             except FileNotFoundError:
-                proc = subprocess.Popen(
-                    ["sh", "./start.sh"],
-                    cwd=d,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
-            # Record something immediately; wrapper will overwrite with real Java pid
-            pid_path(d).write_text(str(proc.pid))
+                        # Fabric rule: run installer-or-launcher with java -jar
+        low = jar.lower()
+        if low.startswith("fabric-server-launch") or low.startswith("fabric-server-launcher") or low.startswith("fabric-installer"):
+            cmd = [pick_java(), "-jar", jar]
+        else:
+            xms, xmx = _mem_from_start_sh(d)
+            cmd = [pick_java(), f"-Xms{xms}", f"-Xmx{xmx}", "-jar", jar, "nogui"]
+        proc = subprocess.Popen(
+            cmd,
+            cwd=d,
+            stdout=out,
+            stderr=out,
+            start_new_session=True,
+        )
+            pid_path(d).write_text(str(proc.pid))  # record something right away
+
+            # Try to resolve to the actual Java pid
             real = _poll_pid_or_detect(d, timeout=12.0)
             if real and real != proc.pid:
                 pid_path(d).write_text(str(real))
-            return "Started." if (real or _proc_is_running(proc.pid)) else "Started (pid pending)."
+            return "Started." if (real or _proc_is_running(proc.pid)) else "Started (pid unknown yet). Check logs/console.log."
 
+    # Windows
     else:
         if start_bat.exists():
-            proc = subprocess.Popen(
-                ["cmd", "/c", "start.bat"],
-                cwd=d,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
+                    # Fabric rule: run installer-or-launcher with java -jar
+        low = jar.lower()
+        if low.startswith("fabric-server-launch") or low.startswith("fabric-server-launcher") or low.startswith("fabric-installer"):
+            cmd = [pick_java(), "-jar", jar]
+        else:
+            xms, xmx = _mem_from_start_sh(d)
+            cmd = [pick_java(), f"-Xms{xms}", f"-Xmx{xmx}", "-jar", jar, "nogui"]
+        proc = subprocess.Popen(
+            cmd,
+            cwd=d,
+            stdout=out,
+            stderr=out,
+            start_new_session=True,
+        )
             pid_path(d).write_text(str(proc.pid))
             real = _poll_pid_or_detect(d, timeout=8.0)
             if real and real != proc.pid:
                 pid_path(d).write_text(str(real))
-            return "Started." if (real or _proc_is_running(proc.pid)) else "Started (pid pending)."
+            return "Started." if (real or _proc_is_running(proc.pid)) else "Started (pid unknown yet)."
 
-    # Fallback: launch jar directly (vanilla/fabric typical path)
+    # Fallback: launch jar directly
     jar = _find_jar(d)
     if not jar:
-        return "No server jar found. Try reinstalling or check the server pack."
+        return "No server jar found. Try `mccli.py create` again or check the server pack."
     xms, xmx = _mem_from_start_sh(d)
 
     out_path = d / "logs" / "console.log"
     with open(out_path, "ab") as out:
+                # Fabric rule: run installer-or-launcher with java -jar
+        low = jar.lower()
+        if low.startswith("fabric-server-launch") or low.startswith("fabric-server-launcher") or low.startswith("fabric-installer"):
+            cmd = [pick_java(), "-jar", jar]
+        else:
+            xms, xmx = _mem_from_start_sh(d)
+            cmd = [pick_java(), f"-Xms{xms}", f"-Xmx{xmx}", "-jar", jar, "nogui"]
         proc = subprocess.Popen(
-            [pick_java(), f"-Xms{xms}", f"-Xmx{xmx}", "-jar", jar, "nogui"],
+            cmd,
             cwd=d,
             stdout=out,
             stderr=out,
@@ -225,6 +246,7 @@ def start(name: str) -> str:
     pid_path(d).write_text(str(proc.pid))
     time.sleep(1.0)
     return "Started."
+
 
 def stop(name: str, force: bool = False) -> str:
     d = server_dir(name)
@@ -239,7 +261,7 @@ def stop(name: str, force: bool = False) -> str:
                 stderr=subprocess.DEVNULL,
             )
         else:
-            # stop pid and its group
+            # Try stopping both the pid and its process group
             try:
                 os.kill(pid, signal.SIGTERM)
             except Exception:
@@ -268,14 +290,17 @@ def stop(name: str, force: bool = False) -> str:
         pass
     return "Stopped."
 
+
 def restart(name: str) -> str:
     stop(name)
     time.sleep(0.5)
     return start(name)
 
+
 def stats(name: str) -> Dict[str, Any]:
     import psutil
-    cpu = psutil.cpu_percent(interval=0.05)
+
+    cpu = psutil.cpu_percent(interval=0.1)
     vm = psutil.virtual_memory()
     d = server_dir(name)
     pid = read_pid(d)
